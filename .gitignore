@@ -1,0 +1,11 @@
+node_modules
+dist
+*.tsbuildinfo
+.DS_Store
+.env
+*.log
+
+# Per-session repo clones — these contain user git tokens via the embedded URL,
+# so they should never be committed.
+workspaces/*
+!workspaces/.gitkeep

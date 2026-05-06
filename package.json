@@ -1,0 +1,14 @@
+{
+  "name": "coleaf-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "install:all": "cd server && npm install && cd ../web && npm install",
+    "dev": "concurrently -n server,web -c green,cyan \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "cd server && npm run dev",
+    "dev:web": "cd web && npm run dev"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
