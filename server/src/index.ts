@@ -236,7 +236,9 @@ app.post("/api/sessions/:id/compile", async (req, res) => {
   const s = getSession(req.params.id);
   if (!s) return res.status(404).json({ error: "session not found" });
   try {
-    const result = await compile(s.workspaceDir);
+    const preferredMainTex =
+      typeof req.body?.mainTex === "string" ? req.body.mainTex : undefined;
+    const result = await compile(s.workspaceDir, preferredMainTex);
     // Don't ship the absolute path to the client — only ok/log/main
     res.json({
       ok: result.ok,

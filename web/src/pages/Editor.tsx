@@ -39,10 +39,10 @@ export function Editor(props: { session: SessionInfo; onLogout: () => void }) {
   const compileTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pdfVersionRef = useRef(0);
 
-  const recompile = useCallback(async () => {
+  const recompile = useCallback(async (mainTex?: string) => {
     setCompileState({ kind: "compiling" });
     try {
-      const result = await api.compile(session.id);
+      const result = await api.compile(session.id, mainTex);
       if (result.ok && result.mainTex) {
         pdfVersionRef.current += 1;
         setCompileState({
@@ -73,9 +73,9 @@ export function Editor(props: { session: SessionInfo; onLogout: () => void }) {
   const scheduleRecompile = useCallback(() => {
     if (compileTimer.current) clearTimeout(compileTimer.current);
     compileTimer.current = setTimeout(() => {
-      recompile();
+      recompile(activePath?.endsWith(".tex") ? activePath : undefined);
     }, 1200);
-  }, [recompile]);
+  }, [activePath, recompile]);
 
   const refreshFiles = useCallback(async () => {
     try {
@@ -367,7 +367,9 @@ export function Editor(props: { session: SessionInfo; onLogout: () => void }) {
         <PdfPane
           sessionId={session.id}
           state={compileState}
-          onRecompile={recompile}
+          onRecompile={() =>
+            recompile(activePath?.endsWith(".tex") ? activePath : undefined)
+          }
         />
         <ChatPanel
           sessionId={session.id}

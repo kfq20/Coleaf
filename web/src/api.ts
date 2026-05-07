@@ -133,10 +133,10 @@ export const api = {
     });
   },
 
-  compile(id: string) {
+  compile(id: string, mainTex?: string) {
     return jsonFetch<{ ok: boolean; mainTex: string | null; log: string; durationMs: number }>(
       `/api/sessions/${id}/compile`,
-      { method: "POST" },
+      { method: "POST", body: JSON.stringify({ mainTex }) },
     );
   },
 

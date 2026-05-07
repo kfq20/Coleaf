@@ -32,21 +32,96 @@ export function getLastCompile(workspaceDir: string): CompileResult | undefined 
   return lastCompileByWorkspace.get(workspaceDir);
 }
 
+type TexCandidate = {
+  relPath: string;
+  content: string;
+};
+
+const MAIN_TEX_ENV = "COLEAF_MAIN_TEX";
+
 /**
- * Find the project's main .tex file by looking for `\documentclass` at the
- * top level. Prefers `main.tex` if present.
+ * Find the project's main .tex file by looking for `\documentclass`.
+ *
+ * Overleaf projects often keep several entry points (`main.tex`,
+ * `main-arxiv.tex`, `main-nips.tex`, camera-ready copies, etc.). A plain
+ * "prefer main.tex" rule is brittle because `main.tex` is often the conference
+ * template while a suffixed file is the buildable entry point.
  */
-async function findMainTex(workspaceDir: string): Promise<string | null> {
-  const entries = await fs.readdir(workspaceDir, { withFileTypes: true });
-  const candidates: string[] = [];
-  for (const e of entries) {
-    if (e.isFile() && e.name.endsWith(".tex")) {
-      const content = await fs.readFile(path.join(workspaceDir, e.name), "utf-8");
-      if (/\\documentclass\b/.test(content)) candidates.push(e.name);
+async function findMainTex(
+  workspaceDir: string,
+  preferredPath?: string,
+): Promise<string | null> {
+  const candidates = await findTexCandidates(workspaceDir);
+  if (candidates.length === 0) return null;
+
+  const explicit = normalizeTexPath(
+    preferredPath || process.env[MAIN_TEX_ENV] || "",
+  );
+  if (explicit) {
+    const match = candidates.find((c) => c.relPath === explicit);
+    if (match) return match.relPath;
+  }
+
+  candidates.sort((a, b) => scoreCandidate(b) - scoreCandidate(a));
+  return candidates[0].relPath;
+}
+
+async function findTexCandidates(workspaceDir: string): Promise<TexCandidate[]> {
+  const candidates: TexCandidate[] = [];
+
+  async function walk(relDir: string, depth: number): Promise<void> {
+    if (depth > 3) return;
+    const absDir = path.join(workspaceDir, relDir);
+    const entries = await fs.readdir(absDir, { withFileTypes: true });
+    for (const e of entries) {
+      if (e.name === ".git" || e.name === "node_modules" || e.name.startsWith("_minted-")) {
+        continue;
+      }
+      const childRel = relDir ? `${relDir}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        await walk(childRel, depth + 1);
+      } else if (e.isFile() && e.name.endsWith(".tex")) {
+        const content = await fs.readFile(path.join(workspaceDir, childRel), "utf-8");
+        if (/\\documentclass\b/.test(content)) {
+          candidates.push({ relPath: childRel, content });
+        }
+      }
     }
   }
-  if (candidates.length === 0) return null;
-  return candidates.find((n) => n === "main.tex") ?? candidates[0];
+
+  await walk("", 0);
+  return candidates;
+}
+
+function normalizeTexPath(input: string): string | null {
+  const trimmed = input.trim();
+  if (!trimmed || !trimmed.endsWith(".tex")) return null;
+  return trimmed.replace(/^\.\/+/, "").split(path.sep).join("/");
+}
+
+function scoreCandidate(candidate: TexCandidate): number {
+  const rel = candidate.relPath;
+  const name = path.basename(rel).toLowerCase();
+  const dir = path.dirname(rel).toLowerCase();
+  const content = candidate.content;
+  let score = 0;
+
+  if (name === "main.tex") score += 40;
+  if (/^main[-_].+\.tex$/.test(name)) score += 80;
+  if (/(nips|neurips|icml|iclr|acl|emnlp|cvpr|eccv|iccv|camera)/.test(name)) {
+    score += 35;
+  }
+  if (/(arxiv|preprint)/.test(name)) score += 20;
+  if (/(nips|neurips|icml|iclr|acl|emnlp|cvpr|eccv|iccv|camera)/.test(dir)) {
+    score += 15;
+  }
+  if (/(arxiv|preprint)/.test(dir)) score += 8;
+  if (/\\begin\{document\}/.test(content)) score += 20;
+  if (/\\maketitle\b/.test(content)) score += 10;
+  if (/\\input\{|\u005cinclude\{/.test(content)) score += 5;
+  score -= rel.split("/").length * 2;
+
+  return score;
 }
 
 /**
@@ -66,15 +141,18 @@ export async function ensureBuildExclude(workspaceDir: string): Promise<void> {
   }
 }
 
-export async function compile(workspaceDir: string): Promise<CompileResult> {
+export async function compile(
+  workspaceDir: string,
+  preferredMainTex?: string,
+): Promise<CompileResult> {
   const started = Date.now();
-  const mainTex = await findMainTex(workspaceDir);
+  const mainTex = await findMainTex(workspaceDir, preferredMainTex);
   if (!mainTex) {
     const result: CompileResult = {
       ok: false,
       mainTex: null,
       pdfPath: null,
-      log: "No .tex file with \\documentclass found at the project root.",
+      log: "No .tex file with \\documentclass found in the project workspace.",
       durationMs: 0,
     };
     lastCompileByWorkspace.set(workspaceDir, result);
@@ -98,14 +176,17 @@ export async function compile(workspaceDir: string): Promise<CompileResult> {
 
   let stdout = "";
   let stderr = "";
+  const mainDir = path.dirname(path.join(workspaceDir, mainTex));
   const code = await new Promise<number>((resolve) => {
     const proc = spawn("latexmk", args, {
       cwd: workspaceDir,
       env: {
         ...process.env,
-        // Keep the bibliography aux files in the build dir too
-        BIBINPUTS: workspaceDir,
-        TEXINPUTS: `${workspaceDir}:`,
+        // Search both the workspace root and the entrypoint's directory.
+        // Some Overleaf projects keep format-specific mains in subfolders,
+        // together with their .sty/.bib support files.
+        BIBINPUTS: `${workspaceDir}:${mainDir}:`,
+        TEXINPUTS: `${workspaceDir}:${mainDir}:`,
       },
     });
     proc.stdout.on("data", (d) => (stdout += d.toString()));
@@ -121,12 +202,16 @@ export async function compile(workspaceDir: string): Promise<CompileResult> {
 
   const log = (stdout + (stderr ? `\n--- stderr ---\n${stderr}` : "")).trim();
 
-  const baseName = mainTex.replace(/\.tex$/, "");
-  const pdfRel = `${baseName}.pdf`;
-  const pdfAbs = path.join(workspaceDir, pdfRel);
-  const pdfExists = existsSync(pdfAbs);
+  const pdfCandidates = [
+    // latexmk writes outputs to cwd by default, even when the source file is
+    // passed as a subdirectory path.
+    `${path.basename(mainTex, ".tex")}.pdf`,
+    `${mainTex.replace(/\.tex$/, "")}.pdf`,
+  ];
+  const pdfRel = pdfCandidates.find((p) => existsSync(path.join(workspaceDir, p)));
+  const pdfAbs = pdfRel ? path.join(workspaceDir, pdfRel) : null;
 
-  if (pdfExists) {
+  if (pdfRel) {
     // Hide the main PDF from git: add to local exclude (covers the untracked
     // case) and mark skip-worktree (covers the tracked case where Overleaf
     // committed the prior PDF). Both are idempotent and per-clone only.
@@ -134,9 +219,9 @@ export async function compile(workspaceDir: string): Promise<CompileResult> {
   }
 
   const result: CompileResult = {
-    ok: code === 0 && pdfExists,
+    ok: code === 0 && !!pdfAbs,
     mainTex,
-    pdfPath: pdfExists ? pdfAbs : null,
+    pdfPath: pdfAbs,
     log,
     durationMs: Date.now() - started,
   };
