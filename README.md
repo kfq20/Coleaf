@@ -188,6 +188,10 @@ cd web && npm run build
 - OAuth / SSO / 团队权限。
 - 部署模板和 `.env` 配置。
 
+## 社区
+
+Coleaf 认可并感谢 [LINUX DO](https://linux.do/) 社区。项目欢迎来自 LINUX DO 佬友的反馈、建议和改进。
+
 ## License
 
 MIT
